@@ -13,7 +13,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/spiffe/go-spiffe/v2/spiffeid"
 	"github.com/spiffe/go-spiffe/v2/spiffetls/tlsconfig"
 	"github.com/spiffe/go-spiffe/v2/workloadapi"
 )
@@ -74,17 +73,21 @@ func NewSpiffeSDK(config *Config) (*SpiffeSDK, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	sdk := &SpiffeSDK{
-		config:      config,
-		headlessAPI: &HeadlessAPI{BaseURL: config.HeadlessAPIURL, HTTPClient: &http.Client{}},
+		config: config,
+		headlessAPI: &HeadlessAPI{
+			BaseURL: config.HeadlessAPIURL,
+			HTTPClient: &http.Client{
+				Timeout: 10 * time.Second, // Add timeout to prevent hanging
+			},
+		},
 		currentSVID: &SVIDCache{},
 		ctx:         ctx,
 		cancel:      cancel,
 	}
 
-	// Initialize workload API for direct SPIRE integration
-	if err := sdk.initWorkloadAPI(); err != nil {
-		return nil, fmt.Errorf("failed to initialize workload API: %w", err)
-	}
+	// Initialize workload API for direct SPIRE integration (optional - may not be available yet)
+	// If it fails, we'll try again during Initialize() after registration
+	_ = sdk.initWorkloadAPI()
 
 	return sdk, nil
 }
@@ -96,14 +99,21 @@ func (s *SpiffeSDK) Initialize() error {
 		return fmt.Errorf("registration failed: %w", err)
 	}
 
+	// Step 1.5: Try to initialize workload API now (after registration)
+	if s.workloadAPI == nil {
+		_ = s.initWorkloadAPI() // Ignore error, will use headless API for SVIDs
+	}
+
 	// Step 2: Get initial SVID
 	if err := s.refreshSVID(); err != nil {
 		return fmt.Errorf("initial SVID fetch failed: %w", err)
 	}
 
-	// Step 3: Setup TLS configuration
-	if err := s.setupTLSConfig(); err != nil {
-		return fmt.Errorf("TLS setup failed: %w", err)
+	// Step 3: Setup TLS configuration (only if workload API is available)
+	if s.workloadAPI != nil {
+		if err := s.setupTLSConfig(); err != nil {
+			return fmt.Errorf("TLS setup failed: %w", err)
+		}
 	}
 
 	// Step 4: Start auto-renewal background process
@@ -341,8 +351,12 @@ type SVIDResponse struct {
 
 // Implementation of helper methods...
 func (s *SpiffeSDK) initWorkloadAPI() error {
+	// Create a timeout context for workload API initialization
+	ctx, cancel := context.WithTimeout(s.ctx, 5*time.Second)
+	defer cancel()
+
 	source, err := workloadapi.NewX509Source(
-		s.ctx,
+		ctx,
 		workloadapi.WithClientOptions(
 			workloadapi.WithAddr("unix://"+s.config.SocketPath),
 		),
@@ -376,7 +390,7 @@ func (api *HeadlessAPI) RegisterAndIssueSVID(payload map[string]interface{}) err
 		return fmt.Errorf("failed to marshal payload: %w", err)
 	}
 
-	req, err := http.NewRequest("POST", api.BaseURL+"/api/v1/workloads/register-and-issue", bytes.NewBuffer(jsonData))
+	req, err := http.NewRequest("POST", api.BaseURL+"/spiresvc/api/v1/workloads/register-and-issue", bytes.NewBuffer(jsonData))
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}
@@ -399,7 +413,7 @@ func (api *HeadlessAPI) RegisterAndIssueSVID(payload map[string]interface{}) err
 
 func (api *HeadlessAPI) GetOrRefreshSVID(spiffeID string) (*SVIDResponse, error) {
 	// Try to get existing SVID first by listing workloads
-	req, err := http.NewRequest("GET", api.BaseURL+"/api/v1/workloads?spiffe_id="+spiffeID, nil)
+	req, err := http.NewRequest("GET", api.BaseURL+"/spiresvc/api/v1/workloads?spiffe_id="+spiffeID, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -433,7 +447,7 @@ func (api *HeadlessAPI) GetOrRefreshSVID(spiffeID string) (*SVIDResponse, error)
 	workloadID := workloadResp.Workloads[0].ID
 
 	// Issue new SVID
-	svidReq, err := http.NewRequest("POST", api.BaseURL+"/api/v1/workloads/"+workloadID+"/svid", nil)
+	svidReq, err := http.NewRequest("POST", api.BaseURL+"/spiresvc/api/v1/workloads/"+workloadID+"/svid", nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create SVID request: %w", err)
 	}
