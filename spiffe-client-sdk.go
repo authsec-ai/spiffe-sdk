@@ -187,6 +187,13 @@ func (s *SpiffeSDK) startAutoRenewal() {
 	}
 }
 
+// GetCurrentSVID returns the current SVID certificate (base64 encoded)
+func (s *SpiffeSDK) GetCurrentSVID() string {
+	s.currentSVID.mu.RLock()
+	defer s.currentSVID.mu.RUnlock()
+	return s.currentSVID.SVID
+}
+
 // GetHTTPClient returns an HTTP client configured with SPIFFE mTLS for internal service calls
 // Use this for calling other services in the same trust domain
 func (s *SpiffeSDK) GetHTTPClient() *http.Client {
