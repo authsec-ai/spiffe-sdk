@@ -484,7 +484,7 @@ func (api *HeadlessAPI) VerifyCertificate(payload map[string]string) (*Validatio
 		return nil, fmt.Errorf("failed to marshal payload: %w", err)
 	}
 
-	req, err := http.NewRequest("POST", api.BaseURL+"/api/v1/verify/certificate", bytes.NewBuffer(jsonData))
+	req, err := http.NewRequest("POST", api.BaseURL+"/spiresvc/api/v1/verify/certificate", bytes.NewBuffer(jsonData))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
