@@ -1,0 +1,163 @@
+# Kubernetes Deployment Template for SPIFFE-enabled Services
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${SERVICE_NAME}
+  namespace: authsec
+  labels:
+    app: ${SERVICE_NAME}
+    spiffe.enabled: "true"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ${SERVICE_NAME}
+  template:
+    metadata:
+      labels:
+        app: ${SERVICE_NAME}
+        spiffe.enabled: "true"
+    spec:
+      serviceAccountName: authsec-sa
+      containers:
+      - name: ${SERVICE_NAME}
+        image: ${SERVICE_IMAGE}:${SERVICE_VERSION}
+        ports:
+        - containerPort: 8080
+          name: https
+        env:
+        # SPIFFE SDK Configuration
+        - name: SPIFFE_SERVICE_NAME
+          value: "${SERVICE_NAME}"
+        - name: SPIFFE_ID
+          value: "spiffe://authsec.dev/${SERVICE_NAME}"
+        - name: SPIFFE_SERVICE_TYPE
+          value: "application"
+        - name: SPIFFE_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: SPIFFE_SERVICE_ACCOUNT
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.serviceAccountName
+        - name: SPIFFE_HEADLESS_API_URL
+          value: "https://dev.api.authsec.dev/spiresvc"
+        - name: SPIFFE_SOCKET_PATH
+          value: "/run/spire/sockets/agent.sock"
+        - name: SPIFFE_TRUST_DOMAIN
+          value: "authsec.dev"
+        - name: SPIFFE_RENEWAL_THRESHOLD
+          value: "5m"
+        - name: SPIFFE_CHECK_INTERVAL
+          value: "1m"
+
+        # Health checks
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+            scheme: HTTPS
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8080
+            scheme: HTTPS
+          initialDelaySeconds: 5
+          periodSeconds: 5
+
+        # Resource limits
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+
+        # Mount SPIRE agent socket
+        volumeMounts:
+        - name: spire-agent-socket
+          mountPath: /run/spire/sockets
+          readOnly: true
+
+      volumes:
+      - name: spire-agent-socket
+        hostPath:
+          path: /run/spire/sockets
+          type: Directory
+
+---
+# Service for exposing the deployment
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${SERVICE_NAME}
+  namespace: authsec
+  labels:
+    app: ${SERVICE_NAME}
+    spiffe.enabled: "true"
+spec:
+  selector:
+    app: ${SERVICE_NAME}
+  ports:
+  - name: https
+    port: 8080
+    targetPort: 8080
+    protocol: TCP
+  type: ClusterIP
+
+---
+# NetworkPolicy for SPIFFE-enabled services
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ${SERVICE_NAME}-spiffe-policy
+  namespace: authsec
+spec:
+  podSelector:
+    matchLabels:
+      app: ${SERVICE_NAME}
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  # Allow traffic from other SPIFFE-enabled services
+  - from:
+    - podSelector:
+        matchLabels:
+          spiffe.enabled: "true"
+    ports:
+    - protocol: TCP
+      port: 8080
+  # Allow health checks from Kubernetes
+  - from: []
+    ports:
+    - protocol: TCP
+      port: 8080
+  egress:
+  # Allow communication to other SPIFFE-enabled services
+  - to:
+    - podSelector:
+        matchLabels:
+          spiffe.enabled: "true"
+    ports:
+    - protocol: TCP
+      port: 8080
+  # Allow communication to headless SPIRE service
+  - to:
+    - podSelector:
+        matchLabels:
+          app: dev-spire-headless
+    ports:
+    - protocol: TCP
+      port: 7475
+  # Allow DNS resolution
+  - to: []
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
